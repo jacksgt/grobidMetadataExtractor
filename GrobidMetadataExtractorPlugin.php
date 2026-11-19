@@ -34,10 +34,11 @@ class GrobidMetadataExtractorPlugin extends GenericPlugin
         'application/pdf',
     ];
 
-    var $convertMimeTypes = [
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'application/msword',
-        'application/vnd.oasis.opendocument.text',
+    /** Mime types to convert to PDF, mapped to a fallback file extension. */
+    var $convertExtensions = [
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+        'application/msword' => 'doc',
+        'application/vnd.oasis.opendocument.text' => 'odt',
     ];
 
     /**
@@ -133,6 +134,8 @@ class GrobidMetadataExtractorPlugin extends GenericPlugin
         $pkpFileService = app()->get('file');
         $file = $pkpFileService->get((int) $submissionFile->getData('fileId'));
 
+        $gotenbergUrl = Config::getVar('grobidMetadataExtractor', 'gotenberg_api_url', '');
+
         // Do not submit to Grobid if the submission file does not look like the sort we want
         if (
             $submission->getData('submissionProgress') != 'start' ||
@@ -140,33 +143,40 @@ class GrobidMetadataExtractorPlugin extends GenericPlugin
             $submissionFile->getFileStage() != $submissionFile::SUBMISSION_FILE_SUBMISSION ||
             $genre->getKey() != 'SUBMISSION' ||
             !$file ||
-            !in_array($file->mimetype, $this->supportedMimeTypes)
+            !in_array($file->mimetype, $this->supportedMimeTypes) ||
+            // Office documents can only be processed when a Gotenberg URL is configured
+            (isset($this->convertExtensions[$file->mimetype]) && !$gotenbergUrl)
         ) return Hook::CONTINUE;
 
         // Some files must be converted to PDF before Grobid can be executed on them.
-        if (in_array($file->mimetype, $this->convertMimeTypes)) {
-            // Copy the uploaded file into the temp directory (in case flysystem is using e.g. a remote filesystem)
-            $inputFilePath = tempnam(sys_get_temp_dir(), 'unoconv');
-            file_put_contents($inputFilePath, $pkpFileService->fs->read($file->path));
+        if (isset($this->convertExtensions[$file->mimetype])) {
+            // Gotenberg picks the LibreOffice import filter from the file extension, and
+            // mime types of office documents are unreliable, so always send a proper extension.
+            $originalName = $submissionFile->getLocalizedData('name') ?: basename($file->path);
+            $extension = strtolower(pathinfo((string) $originalName, PATHINFO_EXTENSION));
+            if (!in_array($extension, $this->convertExtensions, true)) {
+                $extension = $this->convertExtensions[$file->mimetype];
+            }
 
-            // Create an output filename for unoconv to use
-            $convertedFilePath = tempnam(sys_get_temp_dir(), 'unoconv');
-            unlink($convertedFilePath);
-            $convertedFilePath .= '.pdf';
-
-            $output = $result_code = null;
-            exec(
-                Config::getVar('grobidMetadataExtractor', 'unoconv', '/usr/bin/unoconv') . ' -o ' . escapeshellarg($convertedFilePath) . ' ' .
-                escapeshellarg($inputFilePath),
-                $output, $result_code
-            );
-            if ($result_code != 0) {
-                error_log('Grobid metadata extraction: unoconv failed to convert ' . $file->path . ' to PDF.');
+            try {
+                $convertResponse = Application::get()->getHttpClient()->request(
+                    'POST',
+                    rtrim($gotenbergUrl, '/') . '/forms/libreoffice/convert',
+                    [
+                        'multipart' => [
+                            [
+                                'name' => 'files',
+                                'contents' => $pkpFileService->fs->read($file->path),
+                                'filename' => 'document.' . $extension,
+                            ],
+                        ],
+                    ],
+                );
+            } catch (\Exception $e) {
+                error_log('Grobid metadata extraction: Gotenberg failed to convert ' . $file->path . ' to PDF: ' . $e->getMessage());
                 return Hook::CONTINUE;
             }
-            $inputFileContents = file_get_contents($convertedFilePath);
-            unlink($inputFilePath);
-            unlink($convertedFilePath);
+            $inputFileContents = (string) $convertResponse->getBody();
         } else {
             $inputFileContents = $pkpFileService->fs->read($file->path);
         }
