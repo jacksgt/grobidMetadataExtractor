@@ -7,7 +7,7 @@ Known issues:
 
 # Configuration additions
 
-The `config.inc.php` configuration file should be configured with details for both Unoconv (or equivalent) and Grobid.
+The `config.inc.php` configuration file should be configured with details for both Gotenberg and Grobid.
 
 ```
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -16,8 +16,10 @@ The `config.inc.php` configuration file should be configured with details for bo
 
 [grobidMetadataExtractor]
 
-; Path to the Unoconv binary that can be used to convert documents to PDF for Grobid ingestion.
-unoconv = /usr/bin/unoconv
+; Optional. Base URL of the Gotenberg API, used to convert office documents to PDF for Grobid ingestion.
+; The file is uploaded with an extension (e.g. .docx) so Gotenberg knows the format.
+; When unset, office documents are skipped and only PDFs are sent to Grobid.
+;gotenberg_api_url = "http://localhost:3000"
 
 ; When set to On, submissions will be re-grobidded every time a submission file is edited.
 ; (Otherwise, they are stamped the first time a conversion is completed, and will not be touched subsequently.)
